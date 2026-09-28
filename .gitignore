@@ -1,0 +1,8 @@
+# 빌드 산출물
+build/
+
+# 카카오 원본 에셋이 포함된 이미지
+icon-styles.png
+
+# macOS
+.DS_Store
