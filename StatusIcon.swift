@@ -21,6 +21,12 @@ enum NBadge: String, CaseIterable {
     var letter: NSColor { self == .yellow ? NSColor(white: 0.1, alpha: 1) : .white }
 }
 
+/// 배지 안 글자: N(기본) / ↩(내 메시지에 답장) / @(나를 멘션). 겹치면 큰 값이 이긴다.
+enum BadgeMark: Int, Comparable {
+    case n, reply, mention
+    static func < (a: BadgeMark, b: BadgeMark) -> Bool { a.rawValue < b.rawValue }
+}
+
 private enum KakaoAssets {
     static let bundle = Bundle(path: "/Applications/KakaoTalk.app")
 
@@ -91,10 +97,11 @@ enum StatusIcon {
 
     /// badges 는 앞(맨 위)부터. 예: [.red, .blue, .yellow] → 빨강이 맨 앞.
     /// showBubble=false 면 알림이 있을 때 말풍선 없이 같은 배치의 N 배지만 (알림이 없으면 말풍선).
-    static func image(badges: [NBadge], style: BadgeStyle = .row, ring: RingStyle = .white,
+    /// marks: 배지별 글자(없으면 N). 글자를 앞 배지 하나에만 쓰는 배치는 가장 센 글자를 쓴다.
+    static func image(badges: [NBadge], marks: [NBadge: BadgeMark] = [:], style: BadgeStyle = .row, ring: RingStyle = .white,
                       dimmed: Bool = false, showBubble: Bool = true) -> NSImage {
         let bubble = showBubble || badges.isEmpty
-        let full = layoutImage(badges: badges, style: style, ring: ring, dimmed: dimmed, bubble: bubble)
+        let full = layoutImage(badges: badges, marks: marks, style: style, ring: ring, dimmed: dimmed, bubble: bubble)
         guard !bubble, let box = opaqueBounds(full) else { return full }
         // 말풍선이 빠진 만큼 배지 묶음을 메뉴바 높이에 맞춰 키운다 (최대 2배)
         let scale = min(badgesOnlyHeight / box.height, badgesOnlyMaxScale)
@@ -150,12 +157,15 @@ enum StatusIcon {
         }
     }
 
-    private static func layoutImage(badges: [NBadge], style: BadgeStyle, ring: RingStyle,
+    private static func layoutImage(badges: [NBadge], marks: [NBadge: BadgeMark], style: BadgeStyle, ring: RingStyle,
                                     dimmed: Bool, bubble: Bool) -> NSImage {
-        if style == .column && badges.count >= 2 { return columnImage(badges: badges, ring: ring, dimmed: dimmed, bubble: bubble) }
-        if [.dots, .arcs, .triangle, .peek].contains(style) && badges.count >= 2 {
-            return clusterImage(badges: badges, style: style, ring: ring, dimmed: dimmed, bubble: bubble)
+        if style == .column && badges.count >= 2 {
+            return columnImage(badges: badges, marks: marks, ring: ring, dimmed: dimmed, bubble: bubble)
         }
+        if [.dots, .arcs, .triangle, .peek].contains(style) && badges.count >= 2 {
+            return clusterImage(badges: badges, marks: marks, style: style, ring: ring, dimmed: dimmed, bubble: bubble)
+        }
+        let strongest = badges.compactMap { marks[$0] }.max() ?? .n
         let n = badges.count
         // 배지별 중심 오프셋 (앞=0)
         let offsets: [CGVector] = (0..<n).map { i in
@@ -187,14 +197,15 @@ enum StatusIcon {
             case .pie, .column, .dots, .arcs, .triangle, .peek:
                 if n > 0 {
                     drawBadge(ctx, center: badgeCenter, radius: badgeRadius, colors: badges.map { $0.fill(dark: dark) },
-                              letter: n == 1 ? badges[0].letter : .white, withN: true, dark: dark, ring: ring)
+                              letter: n == 1 ? badges[0].letter : .white, withN: true, mark: strongest, dark: dark, ring: ring)
                 }
             case .row, .cascade:
                 // 뒤(마지막)부터 그려서 앞 배지가 위로
                 for (i, b) in badges.enumerated().reversed() {
                     let c = CGPoint(x: badgeCenter.x + offsets[i].dx, y: badgeCenter.y + offsets[i].dy)
                     drawBadge(ctx, center: c, radius: badgeRadius, colors: [b.fill(dark: dark)], letter: b.letter,
-                              withN: style == .row || i == 0, dark: dark, ring: ring)
+                              withN: style == .row || i == 0,
+                              mark: style == .row ? marks[b] ?? .n : strongest, dark: dark, ring: ring)
                 }
             }
             ctx.endTransparencyLayer()
@@ -216,14 +227,20 @@ enum StatusIcon {
 
     /// 배지 하나: 둘레 도려내기(+테두리) → 원본 배지 마스크(뚫린 N)를 radius 에 맞게 축소해 칠한다.
     /// colors 가 여러 개면 12시 방향부터 시계방향으로 등분.
+    /// mark 가 N 이 아니면(@ · ↩) 원 + 벡터 글자로 그린다.
     static func drawBadge(_ ctx: CGContext, center c: CGPoint, radius r: CGFloat, colors: [NSColor],
-                          letter: NSColor = .white, withN: Bool, dark: Bool, ring: NSColor?) {
+                          letter: NSColor = .white, withN: Bool, mark: BadgeMark = .n, dark: Bool, ring: NSColor?) {
         let rr = r + gap
         let ringRect = CGRect(x: c.x - rr, y: c.y - rr, width: rr * 2, height: rr * 2)
         ctx.setBlendMode(.clear); ctx.fillEllipse(in: ringRect); ctx.setBlendMode(.normal)
         if let ring { ctx.setFillColor(ring.cgColor); ctx.fillEllipse(in: ringRect) }
 
         // 1x 화면의 작은 배지: 원본 N 을 축소하면 뭉개지므로 픽셀 격자에 맞춘 4×4 N 을 찍는다
+        if withN && mark != .n {
+            drawFilledCircle(ctx, center: c, radius: r, colors: colors)
+            drawMark(ctx, mark, center: c, radius: r, color: letter)
+            return
+        }
         if withN && r < badgeRadius && ctx.ctm.a < 1.5 && colors.count == 1 {
             ctx.setFillColor(colors[0].cgColor)
             ctx.fillEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
@@ -240,16 +257,8 @@ enum StatusIcon {
         // 마스크가 흐려지므로 원 + 벡터 N
         let px = ctx.ctm.a
         if withN && colors.count == 1 && (px * (r / badgeRadius) > 2.05 || abs(px - px.rounded()) > 0.01) {
-            ctx.setFillColor(colors[0].cgColor)
-            ctx.fillEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
-            let font = NSFont.systemFont(ofSize: r * 1.2, weight: .semibold)
-            let line = CTLineCreateWithAttributedString(
-                NSAttributedString(string: "N", attributes: [.font: font, .foregroundColor: letter]))
-            let b = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
-            ctx.saveGState()
-            ctx.textPosition = CGPoint(x: c.x - b.midX, y: c.y - b.midY)
-            CTLineDraw(line, ctx)
-            ctx.restoreGState()
+            drawFilledCircle(ctx, center: c, radius: r, colors: colors)
+            drawMark(ctx, .n, center: c, radius: r, color: letter)
             return
         }
 
@@ -282,6 +291,51 @@ enum StatusIcon {
         ctx.restoreGState()
     }
 
+    /// 원 채우기. colors 가 여러 개면 12시 방향부터 시계방향으로 등분.
+    private static func drawFilledCircle(_ ctx: CGContext, center c: CGPoint, radius r: CGFloat, colors: [NSColor]) {
+        if colors.count == 1 {
+            ctx.setFillColor(colors[0].cgColor)
+            ctx.fillEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+            return
+        }
+        let step = 2 * CGFloat.pi / CGFloat(colors.count)
+        for (k, col) in colors.enumerated() {
+            let start = CGFloat.pi / 2 - CGFloat(k) * step
+            ctx.move(to: c)
+            ctx.addArc(center: c, radius: r, startAngle: start, endAngle: start - step, clockwise: true)
+            ctx.closePath()
+            ctx.setFillColor(col.cgColor); ctx.fillPath()
+        }
+    }
+
+    /// 배지 가운데 벡터 글자: N · @ · ↩(SF Symbol arrow.uturn.left — N 과 비슷한 획 굵기)
+    private static func drawMark(_ ctx: CGContext, _ mark: BadgeMark, center c: CGPoint, radius r: CGFloat, color: NSColor) {
+        if mark == .reply {
+            let cfg = NSImage.SymbolConfiguration(pointSize: r * 1.0, weight: .bold)
+            guard let sym = NSImage(systemSymbolName: "arrow.uturn.left", accessibilityDescription: nil)?
+                .withSymbolConfiguration(cfg) else { return }
+            // 기하학적으로는 가운데지만 왼쪽 화살촉이 무거워 왼쪽으로 쏠려 보이므로 오른쪽으로 0.1r 보정 (가로 겹치기처럼 오른쪽이 가려지면 0 이 맞고, 안 가려지면 0.2r — 절충)
+            let s = sym.size
+            let rect = CGRect(x: c.x - s.width / 2 + r * 0.1, y: c.y - s.height / 2, width: s.width, height: s.height)
+            guard let cg = sym.cgImage(forProposedRect: nil, context: NSGraphicsContext(cgContext: ctx, flipped: false), hints: nil)
+            else { return }
+            ctx.saveGState()
+            ctx.clip(to: rect, mask: cg)
+            ctx.setFillColor(color.cgColor); ctx.fill(rect)
+            ctx.restoreGState()
+            return
+        }
+        let text = mark == .mention ? "@" : "N"
+        let font = NSFont.systemFont(ofSize: r * (mark == .mention ? 1.45 : 1.2), weight: mark == .mention ? .bold : .semibold)
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
+        let b = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+        ctx.saveGState()
+        ctx.textPosition = CGPoint(x: c.x - b.midX, y: c.y - b.midY)
+        CTLineDraw(line, ctx)
+        ctx.restoreGState()
+    }
+
     // MARK: 2개 이상일 때 모아 그리는 디자인들 (캔버스 22pt, 말풍선은 y+1 에 원본 그대로)
 
     private struct Placement { let center: CGPoint; let radius: CGFloat; let badge: NBadge; let withN: Bool }
@@ -308,8 +362,10 @@ enum StatusIcon {
         }
     }
 
-    private static func clusterImage(badges: [NBadge], style: BadgeStyle, ring: RingStyle, dimmed: Bool, bubble: Bool) -> NSImage {
+    private static func clusterImage(badges: [NBadge], marks: [NBadge: BadgeMark], style: BadgeStyle, ring: RingStyle,
+                                     dimmed: Bool, bubble: Bool) -> NSImage {
         let h: CGFloat = 22
+        let strongest = badges.compactMap { marks[$0] }.max() ?? .n
         let places = placements(badges, style)
         let arcsOuter: CGFloat = badgeRadius + gap + 2       // arcs: 바깥 링 반지름
         let right = style == .arcs ? 15 + arcsOuter + gap
@@ -338,11 +394,13 @@ enum StatusIcon {
                     ctx.setFillColor(b.fill(dark: dark).cgColor); ctx.fillPath()
                 }
                 drawBadge(ctx, center: c, radius: badgeRadius, colors: [badges[0].fill(dark: dark)], letter: badges[0].letter,
-                          withN: true, dark: dark, ring: nil)
+                          withN: true, mark: strongest, dark: dark, ring: nil)
             } else {
                 for p in places {
+                    // 삼각형은 배지마다 글자, 점·위로 겹치기는 앞 배지에만 → 가장 센 글자
                     drawBadge(ctx, center: p.center, radius: p.radius, colors: [p.badge.fill(dark: dark)], letter: p.badge.letter,
-                              withN: p.withN, dark: dark, ring: ringCol)
+                              withN: p.withN, mark: style == .triangle ? marks[p.badge] ?? .n : strongest,
+                              dark: dark, ring: ringCol)
                 }
             }
             ctx.endTransparencyLayer()
@@ -360,7 +418,7 @@ enum StatusIcon {
     static let columnX: CGFloat = 20        // 배지 열 중심 x (말풍선 오른쪽 끝에 살짝 걸침)
 
     /// 말풍선은 가리지 않고, 오른쪽에 배지 열. 맨 아래 = 첫 배지(빨강), 위로 파랑·노랑.
-    private static func columnImage(badges: [NBadge], ring: RingStyle, dimmed: Bool, bubble: Bool) -> NSImage {
+    private static func columnImage(badges: [NBadge], marks: [NBadge: BadgeMark], ring: RingStyle, dimmed: Bool, bubble: Bool) -> NSImage {
         let n = badges.count
         let total = columnRadius * 2 + CGFloat(n - 1) * columnSpacing
         let startY = ((columnHeight - total) / 2 + columnRadius).rounded()
@@ -375,7 +433,7 @@ enum StatusIcon {
             for (i, b) in badges.enumerated().reversed() {
                 let c = CGPoint(x: columnX, y: startY + CGFloat(i) * columnSpacing)
                 drawBadge(ctx, center: c, radius: columnRadius, colors: [b.fill(dark: dark)], letter: b.letter,
-                          withN: true, dark: dark, ring: ringColor(ring, dark: dark))
+                          withN: true, mark: marks[b] ?? .n, dark: dark, ring: ringColor(ring, dark: dark))
             }
             ctx.endTransparencyLayer()
             return true
@@ -386,9 +444,9 @@ enum StatusIcon {
     }
 
     /// 설정 미리보기용: 지정한 메뉴바 모양(밝음/어두움)으로 미리 그린 비트맵
-    static func snapshot(badges: [NBadge], style: BadgeStyle, ring: RingStyle, showBubble: Bool,
+    static func snapshot(badges: [NBadge], marks: [NBadge: BadgeMark] = [:], style: BadgeStyle, ring: RingStyle, showBubble: Bool,
                          dark: Bool, scale: CGFloat = 2) -> NSImage {
-        let icon = image(badges: badges, style: style, ring: ring, showBubble: showBubble)
+        let icon = image(badges: badges, marks: marks, style: style, ring: ring, showBubble: showBubble)
         let size = icon.size
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,

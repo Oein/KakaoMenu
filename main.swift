@@ -233,6 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         startPolling()
+        // 디버그: 실행하자마자 설정 창 (KakaoMenu --open-settings)
+        if CommandLine.arguments.contains("--open-settings") { openSettings() }
     }
 
     // MARK: 안 읽은 채팅
@@ -347,20 +349,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateIcon() {
         guard let button = status.button else { return }
         let badges: [NBadge]
+        let marks: [NBadge: BadgeMark]
         let total: Int?
         if store != nil {
-            badges = Prefs.badges(for: unread)
-            total = unread.reduce(0) { $0 + $1.count }
+            let state = Prefs.iconState(for: unread)
+            (badges, marks, total) = (state.badges, state.marks, state.total)
         } else {
             badges = dockBadge == nil ? [] : [.red]
+            marks = [:]
             total = dockBadge.flatMap { Int($0) }
         }
-        let image = StatusIcon.image(badges: badges, style: Prefs.style, ring: Prefs.ring,
+        let image = StatusIcon.image(badges: badges, marks: marks, style: Prefs.style, ring: Prefs.ring,
                                      dimmed: Kakao.app == nil, showBubble: Prefs.bubble)
         let showCount = UserDefaults.standard.bool(forKey: Prefs.showUnreadCount)
         let title = showCount ? (total.flatMap { $0 > 0 ? " \($0 > 999 ? "999+" : String($0))" : nil } ?? "") : ""
         // 같은 상태면 다시 그리지 않음
-        let key = "\(badges)|\(Prefs.style)|\(Prefs.ring)|\(Prefs.bubble)|\(Kakao.app == nil)|\(title)"
+        let key = "\(badges)|\(NBadge.allCases.map { marks[$0]?.rawValue ?? 0 })|\(Prefs.style)|\(Prefs.ring)|\(Prefs.bubble)|\(Kakao.app == nil)|\(title)"
         guard key != lastIconKey else { return }
         lastIconKey = key
         button.image = image
@@ -437,9 +441,13 @@ if CommandLine.arguments.contains("--unread") {
         let rooms = try store.unreadRooms()
         Prefs.registerDefaults()
         print("안 읽은 메시지 \(rooms.reduce(0) { $0 + $1.count })개 / \(rooms.count)개 방")
-        print("켜질 N 배지: \(Prefs.badges(for: rooms).map(\.rawValue))")
+        let state = Prefs.iconState(for: rooms)
+        print("켜질 N 배지: \(state.badges.map { "\($0.rawValue)\(state.marks[$0].map { $0 == .mention ? "@" : $0 == .reply ? "↩" : "" } ?? "")" })")
+        let ignored = Prefs.ignored
         for r in rooms {
-            print("\n[\(r.name)] \(r.count)개\(r.muted ? " (알림 꺼짐)" : "")  \(Prefs.kind(of: r).rawValue)\(r.isOpenChat ? " 오픈채팅" : "")  chatId=\(r.chatId)")
+            let tags = [r.muted ? "알림 꺼짐" : nil, ignored.contains(r.chatId) ? "무시" : nil,
+                        r.mentioned ? "@멘션" : nil, r.replied ? "↩답장" : nil].compactMap { $0 }
+            print("\n[\(r.name)] \(r.count)개\(tags.isEmpty ? "" : " (\(tags.joined(separator: ", ")))")  \(Prefs.kind(of: r).rawValue)\(r.isOpenChat ? " 오픈채팅" : "")  chatId=\(r.chatId)")
             for m in r.messages { print("  \(m.sentAt)  \(m.author): \(m.text)") }
         }
         exit(0)

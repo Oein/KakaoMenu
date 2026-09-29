@@ -17,6 +17,8 @@ struct UnreadRoom {
     let count: Int
     let muted: Bool
     let isOpenChat: Bool            // 오픈채팅 (NTChatRoom.linkId != 0)
+    let mentioned: Bool             // 안 읽은 메시지 중 나를 멘션한 것이 있음
+    let replied: Bool               // 안 읽은 메시지 중 내 메시지에 답장한 것이 있음
     let messages: [UnreadMessage]   // 오래된 → 최신
     var lastAt: Date { messages.last?.sentAt ?? .distantPast }
 }
@@ -124,12 +126,33 @@ final class KakaoStore {
                                      text: MessageRenderer.render(type: Int(m[2].int ?? -1), message: text),
                                      sentAt: Date(timeIntervalSince1970: TimeInterval(m[4].int ?? 0)))
             }
+            let (mentioned, replied) = try mentionsOfMe(chatId: chatId, after: seen)
             rooms.append(UnreadRoom(chatId: chatId,
                                     name: roomName(chatId: chatId, name: r[1].string, members: r[2].data, linkId: r[3].int ?? 0),
                                     count: Int(r[4].int ?? 0), muted: (r[5].int ?? 1) == 0,
-                                    isOpenChat: (r[3].int ?? 0) != 0, messages: unread))
+                                    isOpenChat: (r[3].int ?? 0) != 0, mentioned: mentioned, replied: replied,
+                                    messages: unread))
         }
         return rooms.sorted { $0.lastAt > $1.lastAt }
+    }
+
+    /// 안 읽은 메시지(logId > seen) 중 나를 멘션한 것 / 내 메시지에 답장한 것이 있는지.
+    /// attachment 예: {"mentions":[{"user_id":123,"len":3,"at":[1]}]} · 답장(type 26) {"src_userId":123,...}
+    /// 오픈채팅에서도 내 userId 는 같다. 내 id 가 들어간 attachment 만 SQL 로 거른 뒤 JSON 으로 확인.
+    private func mentionsOfMe(chatId: Int64, after seen: Int64) throws -> (mentioned: Bool, replied: Bool) {
+        let rows = try db.query("""
+            SELECT type, attachment FROM NTChatMessage
+            WHERE chatId=? AND logId>? AND authorId<>? AND attachment LIKE ?
+            """, [chatId, seen, me, "%\(me)%"])
+        var mentioned = false, replied = false
+        for r in rows {
+            guard let d = MessageRenderer.json(r[1].string) else { continue }
+            if let ms = d["mentions"] as? [[String: Any]],
+               ms.contains(where: { ($0["user_id"] as? NSNumber)?.int64Value == me }) { mentioned = true }
+            if r[0].int == 26, (d["src_userId"] as? NSNumber)?.int64Value == me { replied = true }
+            if mentioned && replied { break }
+        }
+        return (mentioned, replied)
     }
 }
 
