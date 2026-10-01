@@ -17,14 +17,29 @@ enum Kakao {
         NSRunningApplication.runningApplications(withBundleIdentifier: kakaoBundleID).first
     }
 
+    static let openTitles    = ["카카오톡 열기", "Open KakaoTalk", "KakaoTalkを開く"]
+
+    /// 실행 중이면 카카오톡 메뉴바 아이콘 메뉴의 '카카오톡 열기'를 눌러 창을 띄우고,
+    /// 꺼져 있거나 그 항목을 못 찾으면 앱을 open 한다.
     static func open() {
+        if app != nil, AXIsProcessTrusted(), let item = statusMenuOpenItem(),
+           AXUIElementPerformAction(item, kAXPressAction as CFString) == .success {
+            return
+        }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: kakaoBundleID) else {
             alert("카카오톡을 찾을 수 없습니다."); return
         }
-        // 이미 실행 중이면 reopen 이벤트가 가서 닫혀 있던 메인 창도 다시 뜬다.
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = true
         NSWorkspace.shared.openApplication(at: url, configuration: cfg)
+    }
+
+    /// 상태 아이템 메뉴의 '카카오톡 열기'. 제목이 다른 언어면 메뉴의 첫 항목(항상 '열기')을 쓴다.
+    private static func statusMenuOpenItem() -> AXUIElement? {
+        guard let pid = app?.processIdentifier,
+              let extras: AXUIElement = AXUIElementCreateApplication(pid).attr("AXExtrasMenuBar") else { return nil }
+        if let hit = find(in: extras, titles: Set(openTitles), depth: 0) { return hit }
+        return extras.children.first?.children.first?.children.first { $0.role == kAXMenuItemRole }
     }
 
     static func quit() { app?.terminate() }
